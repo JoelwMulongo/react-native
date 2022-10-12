@@ -10,7 +10,9 @@
 
 'use strict';
 
-const {ParserError} = require('./errors');
+import type {TypeAliasResolutionStatus} from '../utils';
+
+const {parseTopLevelType} = require('./parseTopLevelType');
 
 /**
  * TODO(T108222691): Use flow-types for @babel/parser
@@ -49,15 +51,6 @@ export type ASTNode = Object;
 
 const invariant = require('invariant');
 
-type TypeAliasResolutionStatus =
-  | $ReadOnly<{
-      successful: true,
-      aliasName: string,
-    }>
-  | $ReadOnly<{
-      successful: false,
-    }>;
-
 function resolveTypeAnnotation(
   // TODO(T108222691): Use flow-types for @babel/parser
   typeAnnotation: $FlowFixMe,
@@ -82,18 +75,11 @@ function resolveTypeAnnotation(
   };
 
   for (;;) {
-    // Check for optional type in union e.g. T | null | undefined
-    if (
-      node.type === 'TSUnionType' &&
-      node.types.some(
-        t => t.type === 'TSNullKeyword' || t.type === 'TSUndefinedKeyword',
-      )
-    ) {
-      node = node.types.filter(
-        t => t.type !== 'TSNullKeyword' && t.type !== 'TSUndefinedKeyword',
-      )[0];
-      nullable = true;
-    } else if (node.type === 'TSTypeReference') {
+    const topLevelType = parseTopLevelType(node);
+    nullable = nullable || topLevelType.optional;
+    node = topLevelType.type;
+
+    if (node.type === 'TSTypeReference') {
       typeAliasResolutionStatus = {
         successful: true,
         aliasName: node.typeName.name,
@@ -122,44 +108,6 @@ function resolveTypeAnnotation(
     typeAnnotation: node,
     typeAliasResolutionStatus,
   };
-}
-
-function getValueFromTypes(value: ASTNode, types: TypeDeclarationMap): ASTNode {
-  switch (value.type) {
-    case 'TSTypeReference':
-      if (types[value.typeName.name]) {
-        return getValueFromTypes(types[value.typeName.name], types);
-      } else {
-        return value;
-      }
-    case 'TSTypeAliasDeclaration':
-      return getValueFromTypes(value.typeAnnotation, types);
-    default:
-      return value;
-  }
-}
-
-export type ParserErrorCapturer = <T>(fn: () => T) => ?T;
-
-function createParserErrorCapturer(): [
-  Array<ParserError>,
-  ParserErrorCapturer,
-] {
-  const errors = [];
-  function guard<T>(fn: () => T): ?T {
-    try {
-      return fn();
-    } catch (error) {
-      if (!(error instanceof ParserError)) {
-        throw error;
-      }
-      errors.push(error);
-
-      return null;
-    }
-  }
-
-  return [errors, guard];
 }
 
 // TODO(T108222691): Use flow-types for @babel/parser
@@ -231,9 +179,7 @@ function isModuleRegistryCall(node: $FlowFixMe): boolean {
 }
 
 module.exports = {
-  getValueFromTypes,
   resolveTypeAnnotation,
-  createParserErrorCapturer,
   getTypes,
   visit,
   isModuleRegistryCall,

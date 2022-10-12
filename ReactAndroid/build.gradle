@@ -163,6 +163,17 @@ final def preparePrefab = tasks.register("preparePrefab", PreparePrefabHeadersTa
                     new Pair("src/main/jni/react/jni", "react/jni/"),
                 ]
             ),
+            new PrefabPreprocessingEntry(
+                "react_render_imagemanager",
+                [
+                    new Pair("../ReactCommon/react/renderer/imagemanager/", "react/renderer/imagemanager/"),
+                    new Pair("../ReactCommon/react/renderer/imagemanager/platform/cxx/", ""),
+                ]
+            ),
+            new PrefabPreprocessingEntry(
+                "rrc_image",
+                new Pair("../ReactCommon/react/renderer/components/image/", "react/renderer/components/image/")
+            ),
         ]
     )
     it.outputDir.set(prefabHeadersDir)
@@ -339,31 +350,12 @@ def reactNativeArchitectures() {
 }
 
 tasks.register("packageReactNdkLibsForBuck") {
-    dependsOn("packageReactNdkDebugLibsForBuck")
-}
-
-tasks.register("packageReactNdkDebugLibsForBuck", Copy) {
     dependsOn("mergeDebugNativeLibs")
     // Shared libraries (.so) are copied from the merged_native_libs folder instead
     from("$buildDir/intermediates/merged_native_libs/debug/out/lib/")
     exclude("**/libjsc.so")
     exclude("**/libhermes.so")
     into("src/main/jni/prebuilt/lib")
-}
-
-tasks.register("packageReactNdkReleaseLibsForBuck", Copy) {
-    dependsOn("mergeReleaseNativeLibs")
-    // Shared libraries (.so) are copied from the merged_native_libs folder instead
-    from("$buildDir/intermediates/merged_native_libs/release/out/lib/")
-    exclude("**/libjsc.so")
-    exclude("**/libhermes.so")
-    into("src/main/jni/prebuilt/lib")
-}
-
-final def extractNativeDependencies = tasks.register('extractNativeDependencies', ExtractJniAndHeadersTask) {
-    it.extractHeadersConfiguration.setFrom(configurations.extractHeaders)
-    it.extractJniConfiguration.setFrom(configurations.extractJNI)
-    it.baseOutputDir = project.file("src/main/jni/first-party/")
 }
 
 task installArchives {
@@ -425,6 +417,7 @@ android {
                     "react_newarchdefaults",
                     "react_render_core",
                     "react_render_graphics",
+                    "rrc_image",
                     "rrc_view",
                     "jsi",
                     "glog",
@@ -432,7 +425,8 @@ android {
                     "react_render_mapbuffer",
                     "yoga",
                     "folly_runtime",
-                    "react_nativemodule_core"
+                    "react_nativemodule_core",
+                    "react_render_imagemanager"
             }
         }
         ndk {
@@ -464,7 +458,7 @@ android {
         }
     }
 
-    preBuild.dependsOn(prepareJSC, prepareBoost, prepareDoubleConversion, prepareFmt, prepareFolly, prepareGlog, prepareLibevent, extractNativeDependencies)
+    preBuild.dependsOn(prepareJSC, prepareBoost, prepareDoubleConversion, prepareFmt, prepareFolly, prepareGlog, prepareLibevent)
     preBuild.dependsOn("generateCodegenArtifactsFromSchema")
     preBuild.dependsOn(preparePrefab)
 
@@ -490,11 +484,6 @@ android {
         // that will include the necessary .so files to load.
         exclude("**/libhermes.so")
         exclude("**/libjsc.so")
-    }
-
-    configurations {
-        extractHeaders
-        extractJNI
     }
 
     buildFeatures {
@@ -530,6 +519,9 @@ android {
         react_render_graphics {
             headers(new File(prefabHeadersDir, "react_render_graphics").absolutePath)
         }
+        rrc_image {
+            headers(new File(prefabHeadersDir, "rrc_image").absolutePath)
+        }
         rrc_view {
             headers(new File(prefabHeadersDir, "rrc_view").absolutePath)
         }
@@ -554,6 +546,9 @@ android {
         react_nativemodule_core {
             headers(new File(prefabHeadersDir, "react_nativemodule_core").absolutePath)
         }
+        react_render_imagemanager {
+            headers(new File(prefabHeadersDir, "react_render_imagemanager").absolutePath)
+        }
     }
 
     publishing {
@@ -571,7 +566,7 @@ dependencies {
     api("androidx.swiperefreshlayout:swiperefreshlayout:${SWIPEREFRESH_LAYOUT_VERSION}")
     api("androidx.tracing:tracing:${ANDROIDX_TRACING_VERSION}")
 
-    api("com.facebook.fbjni:fbjni-java-only:${FBJNI_VERSION}")
+    api("com.facebook.fbjni:fbjni:${FBJNI_VERSION}")
     api("com.facebook.fresco:fresco:${FRESCO_VERSION}")
     api("com.facebook.fresco:imagepipeline-okhttp3:${FRESCO_VERSION}")
     api("com.facebook.fresco:ui-common:${FRESCO_VERSION}")
@@ -584,9 +579,6 @@ dependencies {
     api("com.squareup.okhttp3:okhttp:${OKHTTP_VERSION}")
     api("com.squareup.okio:okio:${OKIO_VERSION}")
     api("javax.inject:javax.inject:${JAVAX_INJECT_VERSION}")
-
-    extractHeaders("com.facebook.fbjni:fbjni:${FBJNI_VERSION}:headers")
-    extractJNI("com.facebook.fbjni:fbjni:${FBJNI_VERSION}")
 
     // It's up to the consumer to decide if hermes should be included or not.
     // Therefore hermes-engine is a compileOnly dependency.

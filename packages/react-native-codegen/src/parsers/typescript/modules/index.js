@@ -23,7 +23,7 @@ import type {
 } from '../../../CodegenSchema.js';
 
 import type {TypeDeclarationMap} from '../utils.js';
-import type {ParserErrorCapturer} from '../utils';
+import type {ParserErrorCapturer} from '../../utils';
 import type {NativeModuleTypeAnnotation} from '../../../CodegenSchema.js';
 
 const {
@@ -32,32 +32,45 @@ const {
   visit,
   isModuleRegistryCall,
 } = require('../utils.js');
-const {unwrapNullable, wrapNullable} = require('./utils');
 const {
-  IncorrectlyParameterizedTypeScriptGenericParserError,
-  MisnamedModuleTypeScriptInterfaceParserError,
-  ModuleTypeScriptInterfaceNotFoundParserError,
-  MoreThanOneModuleTypeScriptInterfaceParserError,
+  unwrapNullable,
+  wrapNullable,
+  assertGenericTypeAnnotationHasExactlyOneTypeParameter,
+} = require('../../parsers-commons');
+const {
+  emitBoolean,
+  emitDouble,
+  emitNumber,
+  emitInt32,
+  emitObject,
+  emitPromise,
+  emitRootTag,
+  typeAliasResolution,
+} = require('../../parsers-primitives');
+const {
+  MisnamedModuleInterfaceParserError,
+  ModuleInterfaceNotFoundParserError,
+  MoreThanOneModuleInterfaceParserError,
   UnnamedFunctionParamParserError,
   UnsupportedArrayElementTypeAnnotationParserError,
-  UnsupportedTypeScriptGenericParserError,
-  UnsupportedTypeScriptTypeAnnotationParserError,
+  UnsupportedGenericParserError,
+  UnsupportedTypeAnnotationParserError,
   UnsupportedFunctionParamTypeAnnotationParserError,
   UnsupportedFunctionReturnTypeAnnotationParserError,
-  UnsupportedTypeScriptEnumDeclarationParserError,
-  UnsupportedTypeScriptUnionTypeAnnotationParserError,
+  UnsupportedEnumDeclarationParserError,
+  UnsupportedUnionTypeAnnotationParserError,
   UnsupportedModulePropertyParserError,
   UnsupportedObjectPropertyTypeAnnotationParserError,
   UnsupportedObjectPropertyValueTypeAnnotationParserError,
-  UnusedModuleTypeScriptInterfaceParserError,
+  UnusedModuleInterfaceParserError,
   MoreThanOneModuleRegistryCallsParserError,
   UntypedModuleRegistryCallParserError,
   IncorrectModuleRegistryCallTypeParameterParserError,
   IncorrectModuleRegistryCallArityParserError,
   IncorrectModuleRegistryCallArgumentTypeParserError,
-} = require('./errors.js');
+} = require('../../errors.js');
 
-const invariant = require('invariant');
+const language = 'TypeScript';
 
 function nullGuard<T>(fn: () => T): ?T {
   return fn();
@@ -103,6 +116,7 @@ function translateArrayTypeAnnotation(
         tsElementType,
         tsArrayType,
         'void',
+        language,
       );
     }
 
@@ -112,6 +126,7 @@ function translateArrayTypeAnnotation(
         tsElementType,
         tsArrayType,
         'Promise',
+        language,
       );
     }
 
@@ -121,6 +136,7 @@ function translateArrayTypeAnnotation(
         tsElementType,
         tsArrayType,
         'FunctionTypeAnnotation',
+        language,
       );
     }
 
@@ -154,16 +170,6 @@ function translateTypeAnnotation(
     resolveTypeAnnotation(typeScriptTypeAnnotation, types);
 
   switch (typeAnnotation.type) {
-    case 'TSParenthesizedType': {
-      return translateTypeAnnotation(
-        hasteModuleName,
-        typeAnnotation.typeAnnotation,
-        types,
-        aliasMap,
-        tryParse,
-        cxxOnly,
-      );
-    }
     case 'TSArrayType': {
       return translateArrayTypeAnnotation(
         hasteModuleName,
@@ -190,35 +196,32 @@ function translateTypeAnnotation(
           nullable,
         );
       } else {
-        throw new UnsupportedTypeScriptGenericParserError(
+        throw new UnsupportedGenericParserError(
           hasteModuleName,
           typeAnnotation,
+          language,
         );
       }
     }
     case 'TSTypeReference': {
       switch (typeAnnotation.typeName.name) {
         case 'RootTag': {
-          return wrapNullable(nullable, {
-            type: 'ReservedTypeAnnotation',
-            name: 'RootTag',
-          });
+          return emitRootTag(nullable);
         }
         case 'Promise': {
-          assertGenericTypeAnnotationHasExactlyOneTypeParameter(
+          return emitPromise(
             hasteModuleName,
             typeAnnotation,
+            language,
+            nullable,
           );
-
-          return wrapNullable(nullable, {
-            type: 'PromiseTypeAnnotation',
-          });
         }
         case 'Array':
         case 'ReadonlyArray': {
           assertGenericTypeAnnotationHasExactlyOneTypeParameter(
             hasteModuleName,
             typeAnnotation,
+            language,
           );
 
           return translateArrayTypeAnnotation(
@@ -231,39 +234,16 @@ function translateTypeAnnotation(
             nullable,
           );
         }
-        case 'Readonly': {
-          assertGenericTypeAnnotationHasExactlyOneTypeParameter(
-            hasteModuleName,
-            typeAnnotation,
-          );
-
-          const [paramType, isParamNullable] = unwrapNullable(
-            translateTypeAnnotation(
-              hasteModuleName,
-              typeAnnotation.typeParameters.params[0],
-              types,
-              aliasMap,
-              tryParse,
-              cxxOnly,
-            ),
-          );
-
-          return wrapNullable(nullable || isParamNullable, paramType);
-        }
         case 'Stringish': {
           return wrapNullable(nullable, {
             type: 'StringTypeAnnotation',
           });
         }
         case 'Int32': {
-          return wrapNullable(nullable, {
-            type: 'Int32TypeAnnotation',
-          });
+          return emitInt32(nullable);
         }
         case 'Double': {
-          return wrapNullable(nullable, {
-            type: 'DoubleTypeAnnotation',
-          });
+          return emitDouble(nullable);
         }
         case 'Float': {
           return wrapNullable(nullable, {
@@ -272,9 +252,7 @@ function translateTypeAnnotation(
         }
         case 'UnsafeObject':
         case 'Object': {
-          return wrapNullable(nullable, {
-            type: 'GenericObjectTypeAnnotation',
-          });
+          return emitObject(nullable);
         }
         default: {
           const maybeEumDeclaration = types[typeAnnotation.typeName.name];
@@ -297,16 +275,18 @@ function translateTypeAnnotation(
                 memberType: memberType,
               });
             } else {
-              throw new UnsupportedTypeScriptEnumDeclarationParserError(
+              throw new UnsupportedEnumDeclarationParserError(
                 hasteModuleName,
                 typeAnnotation,
                 memberType,
+                language,
               );
             }
           }
-          throw new UnsupportedTypeScriptGenericParserError(
+          throw new UnsupportedGenericParserError(
             hasteModuleName,
             typeAnnotation,
+            language,
           );
         }
       }
@@ -324,6 +304,7 @@ function translateTypeAnnotation(
                     hasteModuleName,
                     property,
                     property.type,
+                    language,
                   );
                 }
 
@@ -347,6 +328,7 @@ function translateTypeAnnotation(
                     property.typeAnnotation.typeAnnotation,
                     property.key,
                     propertyTypeAnnotation.type,
+                    language,
                   );
                 }
 
@@ -356,6 +338,7 @@ function translateTypeAnnotation(
                     property.typeAnnotation.typeAnnotation,
                     property.key,
                     'void',
+                    language,
                   );
                 }
 
@@ -365,6 +348,7 @@ function translateTypeAnnotation(
                     property.typeAnnotation.typeAnnotation,
                     property.key,
                     'Promise',
+                    language,
                   );
                 }
 
@@ -382,58 +366,18 @@ function translateTypeAnnotation(
           .filter(Boolean),
       };
 
-      if (!typeAliasResolutionStatus.successful) {
-        return wrapNullable(nullable, objectTypeAnnotation);
-      }
-
-      /**
-       * All aliases RHS are required.
-       */
-      aliasMap[typeAliasResolutionStatus.aliasName] = objectTypeAnnotation;
-
-      /**
-       * Nullability of type aliases is transitive.
-       *
-       * Consider this case:
-       *
-       * type Animal = ?{
-       *   name: string,
-       * };
-       *
-       * type B = Animal
-       *
-       * export interface Spec extends TurboModule {
-       *   +greet: (animal: B) => void;
-       * }
-       *
-       * In this case, we follow B to Animal, and then Animal to ?{name: string}.
-       *
-       * We:
-       *   1. Replace `+greet: (animal: B) => void;` with `+greet: (animal: ?Animal) => void;`,
-       *   2. Pretend that Animal = {name: string}.
-       *
-       * Why do we do this?
-       *  1. In ObjC, we need to generate a struct called Animal, not B.
-       *  2. This design is simpler than managing nullability within both the type alias usage, and the type alias RHS.
-       *  3. What does it mean for a C++ struct, which is what this type alias RHS will generate, to be nullable? ¯\_(ツ)_/¯
-       *     Nullability is a concept that only makes sense when talking about instances (i.e: usages) of the C++ structs.
-       *     Hence, it's better to manage nullability within the actual TypeAliasTypeAnnotation nodes, and not the
-       *     associated ObjectTypeAnnotations.
-       */
-      return wrapNullable(nullable, {
-        type: 'TypeAliasTypeAnnotation',
-        name: typeAliasResolutionStatus.aliasName,
-      });
+      return typeAliasResolution(
+        typeAliasResolutionStatus,
+        objectTypeAnnotation,
+        aliasMap,
+        nullable,
+      );
     }
     case 'TSBooleanKeyword': {
-      return wrapNullable(nullable, {
-        type: 'BooleanTypeAnnotation',
-      });
+      return emitBoolean(nullable);
     }
     case 'TSNumberKeyword': {
-      return wrapNullable(nullable, {
-        type: 'NumberTypeAnnotation',
-      });
+      return emitNumber(nullable);
     }
     case 'TSVoidKeyword': {
       return wrapNullable(nullable, {
@@ -472,10 +416,11 @@ function translateTypeAnnotation(
           .filter((value, index, self) => self.indexOf(value) === index);
         // Only support unionTypes of the same kind
         if (unionTypes.length > 1) {
-          throw new UnsupportedTypeScriptUnionTypeAnnotationParserError(
+          throw new UnsupportedUnionTypeAnnotationParserError(
             hasteModuleName,
             typeAnnotation,
             unionTypes,
+            language,
           );
         }
         return wrapNullable(nullable, {
@@ -494,38 +439,12 @@ function translateTypeAnnotation(
       // Fallthrough
     }
     default: {
-      throw new UnsupportedTypeScriptTypeAnnotationParserError(
+      throw new UnsupportedTypeAnnotationParserError(
         hasteModuleName,
         typeAnnotation,
+        language,
       );
     }
-  }
-}
-
-function assertGenericTypeAnnotationHasExactlyOneTypeParameter(
-  moduleName: string,
-  /**
-   * TODO(T108222691): Use flow-types for @babel/parser
-   */
-  typeAnnotation: $FlowFixMe,
-) {
-  if (typeAnnotation.typeParameters == null) {
-    throw new IncorrectlyParameterizedTypeScriptGenericParserError(
-      moduleName,
-      typeAnnotation,
-    );
-  }
-
-  invariant(
-    typeAnnotation.typeParameters.type === 'TSTypeParameterInstantiation',
-    "assertGenericTypeAnnotationHasExactlyOneTypeParameter: Type parameters must be an AST node of type 'TSTypeParameterInstantiation'",
-  );
-
-  if (typeAnnotation.typeParameters.params.length !== 1) {
-    throw new IncorrectlyParameterizedTypeScriptGenericParserError(
-      moduleName,
-      typeAnnotation,
-    );
   }
 }
 
@@ -547,6 +466,7 @@ function translateFunctionTypeAnnotation(
         throw new UnnamedFunctionParamParserError(
           typeScriptParam,
           hasteModuleName,
+          language,
         );
       }
 
@@ -569,6 +489,7 @@ function translateFunctionTypeAnnotation(
           typeScriptParam.typeAnnotation,
           paramName,
           'void',
+          language,
         );
       }
 
@@ -578,6 +499,7 @@ function translateFunctionTypeAnnotation(
           typeScriptParam.typeAnnotation,
           paramName,
           'Promise',
+          language,
         );
       }
 
@@ -612,6 +534,7 @@ function translateFunctionTypeAnnotation(
       hasteModuleName,
       typescriptFunctionTypeAnnotation.returnType,
       'FunctionTypeAnnotation',
+      language,
     );
   }
 
@@ -649,6 +572,7 @@ function buildPropertySchema(
       property.value,
       property.key.name,
       value.type,
+      language,
     );
   }
 
@@ -692,26 +616,29 @@ function buildModuleSchema(
   );
 
   if (moduleSpecs.length === 0) {
-    throw new ModuleTypeScriptInterfaceNotFoundParserError(
+    throw new ModuleInterfaceNotFoundParserError(
       hasteModuleName,
       ast,
+      language,
     );
   }
 
   if (moduleSpecs.length > 1) {
-    throw new MoreThanOneModuleTypeScriptInterfaceParserError(
+    throw new MoreThanOneModuleInterfaceParserError(
       hasteModuleName,
       moduleSpecs,
       moduleSpecs.map(node => node.id.name),
+      language,
     );
   }
 
   const [moduleSpec] = moduleSpecs;
 
   if (moduleSpec.id.name !== 'Spec') {
-    throw new MisnamedModuleTypeScriptInterfaceParserError(
+    throw new MisnamedModuleInterfaceParserError(
       hasteModuleName,
       moduleSpec.id,
+      language,
     );
   }
 
@@ -727,9 +654,10 @@ function buildModuleSchema(
     });
 
     if (callExpressions.length === 0) {
-      throw new UnusedModuleTypeScriptInterfaceParserError(
+      throw new UnusedModuleInterfaceParserError(
         hasteModuleName,
         moduleSpec,
+        language,
       );
     }
 
@@ -738,6 +666,7 @@ function buildModuleSchema(
         hasteModuleName,
         callExpressions,
         callExpressions.length,
+        language,
       );
     }
 
@@ -751,6 +680,7 @@ function buildModuleSchema(
         callExpression,
         methodName,
         callExpression.arguments.length,
+        language,
       );
     }
 
@@ -761,6 +691,7 @@ function buildModuleSchema(
         callExpression.arguments[0],
         methodName,
         type,
+        language,
       );
     }
 
@@ -772,6 +703,7 @@ function buildModuleSchema(
         callExpression,
         methodName,
         $moduleName,
+        language,
       );
     }
 
@@ -786,6 +718,7 @@ function buildModuleSchema(
         typeParameters,
         methodName,
         $moduleName,
+        language,
       );
     }
 
